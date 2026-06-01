@@ -8,22 +8,23 @@ start_camera() {
     local serial=$2
     
     echo "正在启动 $cam_name (序列号: $serial)..."
-    
-    # 注意：这里使用 Python Launch 文件的思路最稳，
-    # 但如果非要用 rs_launch.py，我们需要用一个临时 yaml 来传参
-    
-    # 1. 为每个相机创建一个临时的 yaml 参数文件（确保 serial_no 是字符串）
-    cat > /tmp/realsense_${cam_name}_params.yaml << EOF
-/**:
-  ros__parameters:
-    serial_no: "$serial"
-EOF
 
-    # 2. 启动相机并放入后台 (&)
     ros2 launch realsense2_camera rs_launch.py \
         camera_namespace:=camera \
         camera_name:=${cam_name} \
-        serial_no:="'$serial'" &
+        serial_no:="'$serial'" \
+        initial_reset:=true \
+        wait_for_device_timeout:=10.0 \
+        reconnect_timeout:=10.0 \
+        enable_depth:=true \
+        enable_color:=true \
+        depth_module.profile:=640x480x30 \
+        rgb_camera.profile:=640x480x30 \
+        enable_infra1:=false \
+        enable_infra2:=false \
+        enable_gyro:=false \
+        enable_accel:=false \
+        enable_sync:=false &
 }
 
 # --- 主程序 ---
@@ -32,11 +33,11 @@ echo "开始启动所有 RealSense 相机..."
 
 # 启动顶部相机
 start_camera "top" '335222073051'
-sleep 2 # 稍微间隔一下，避免 USB 带宽冲突
+sleep 20 # 给 USB 复位、设备枚举和深度流启动留出时间
 
 # 启动左侧相机
 start_camera "left" '239122070290'
-sleep 2
+sleep 20
 
 # 启动右侧相机
 start_camera "right" '327122076728'
