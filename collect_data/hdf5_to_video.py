@@ -4,9 +4,9 @@
 
 Example:
   python3 hdf5_to_video.py \
-    --file /home/agilex/data/clean_desktop/zcl/episode_0.hdf5 \
+    --file ~/data/fold_towel/fold_towel_0601/episode_20.hdf5 \
     --output episode_0.mp4 \
-    --fps 20 \
+    --fps 30 \
     --show_velocity --show_effort
 """
 

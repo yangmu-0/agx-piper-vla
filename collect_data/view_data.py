@@ -4,7 +4,7 @@
 '''
   python3 /home/agilex/piper_ros/collect_data/view_data.py \
     --dataset_dir /home/agilex/data \
-    --task_name bin_packing_ljm_all_up_random_screwdriver_pan_hand_cream_lipstick \
+    --task_name fold_towel \
     --episode_idx 0 --show_depth --show_velocity --show_effort
 
 '''
@@ -212,16 +212,49 @@ class EpisodeViewerData:
         self.root.close()
 
 
+def _format_number(value: float, decimals: int) -> str:
+    if not np.isfinite(value):
+        return str(value)
+    if decimals <= 0:
+        return str(int(round(value)))
+    return f"{value:+.{decimals}f}"
+
+
 def format_vec(vec: Optional[np.ndarray], decimals: int = 3) -> str:
     if vec is None:
         return "N/A"
-    return np.array2string(
-        np.asarray(vec),
-        precision=decimals,
-        separator=", ",
-        suppress_small=False,
-        max_line_width=1000,
-    )
+    arr = np.asarray(vec).reshape(-1)
+    if arr.size == 0:
+        return "[]"
+    return "[" + ", ".join(_format_number(float(v), decimals) for v in arr) + "]"
+
+
+def vector_lines(
+    label: str,
+    vec: Optional[np.ndarray],
+    color: Tuple[int, int, int],
+    decimals: int = 3,
+    chunk_size: int = 4,
+    scale: float = 0.58,
+    thickness: int = 1,
+) -> List[Tuple[str, Tuple[int, int, int], float, int]]:
+    if vec is None:
+        return [(f"{label}: N/A", color, scale, thickness)]
+
+    arr = np.asarray(vec).reshape(-1)
+    if arr.size == 0:
+        return [(f"{label}: []", color, scale, thickness)]
+
+    lines = []
+    for start in range(0, arr.size, chunk_size):
+        end = min(start + chunk_size, arr.size)
+        chunk = format_vec(arr[start:end], decimals)
+        if arr.size <= chunk_size:
+            prefix = f"{label}:"
+        else:
+            prefix = f"{label}[{start}:{end}]:"
+        lines.append((f"{prefix} {chunk}", color, scale, thickness))
+    return lines
 
 
 def safe_frame_value(arr: Optional[np.ndarray], frame_idx: int) -> Optional[np.ndarray]:
@@ -291,26 +324,27 @@ def put_lines(
     for text, color, scale, thickness in lines:
         if y > panel.shape[0] - bottom_margin:
             break
+        cv2.putText(panel, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), thickness + 2, cv2.LINE_AA)
         cv2.putText(panel, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, scale, color, thickness, cv2.LINE_AA)
         y += line_h
     return y
 
 
 def arm_lines(title: str, qpos, qvel, effort, end_pose, show_velocity: bool, show_effort: bool):
-    heading = (90, 220, 255)
-    fg = (235, 235, 235)
-    muted = (180, 190, 195)
+    heading = (115, 230, 255)
+    fg = (245, 245, 245)
+    muted = (205, 215, 220)
     lines = [
-        (title, heading, 0.74, 2),
-        (f"qpos: {format_vec(qpos)}", fg, 0.58, 1),
+        (title, heading, 0.78, 2),
     ]
+    lines.extend(vector_lines("qpos", qpos, fg, decimals=3, chunk_size=4, scale=0.6, thickness=1))
     if qpos is not None and len(qpos) > 0:
-        lines.append((f"last/gripper: {float(qpos[-1]):.4f}", muted, 0.58, 1))
+        lines.append((f"gripper: {float(qpos[-1]):+.4f}", muted, 0.6, 1))
     if show_velocity:
-        lines.append((f"qvel: {format_vec(qvel)}", fg, 0.58, 1))
+        lines.extend(vector_lines("qvel", qvel, fg, decimals=3, chunk_size=4, scale=0.56, thickness=1))
     if show_effort:
-        lines.append((f"eff : {format_vec(effort)}", fg, 0.58, 1))
-    lines.append((f"eef : {format_vec(end_pose)}", fg, 0.58, 1))
+        lines.extend(vector_lines("eff", effort, fg, decimals=3, chunk_size=4, scale=0.56, thickness=1))
+    lines.extend(vector_lines("eef", end_pose, fg, decimals=3, chunk_size=4, scale=0.6, thickness=1))
     return lines
 
 
@@ -327,28 +361,40 @@ def draw_joint_panel(
     show_effort: bool,
     panel_w: int = 920,
 ) -> np.ndarray:
-    panel = np.full((h, panel_w, 3), 22, dtype=np.uint8)
-    fg = (230, 230, 230)
-    em = (80, 220, 255)
-    muted = (165, 175, 180)
-    ok = (120, 240, 130)
+    panel = np.full((h, panel_w, 3), 18, dtype=np.uint8)
+    fg = (245, 245, 245)
+    em = (115, 230, 255)
+    muted = (205, 215, 220)
+    ok = (120, 245, 145)
+    section_bg = (34, 38, 41)
+    header_bg = (42, 48, 52)
+    border = (70, 78, 82)
+    margin = 20
 
-    y = 38
+    def section_box(top: int, bottom: int, fill=section_bg) -> None:
+        bottom = max(top + 1, min(bottom, h - 1))
+        cv2.rectangle(panel, (12, top), (panel_w - 12, bottom), fill, -1)
+        cv2.rectangle(panel, (12, top), (panel_w - 12, bottom), border, 1)
+
+    y = 36
     state = "PLAY" if playing else "PAUSE"
     pct = 100.0 * frame_idx / max(1, total - 1)
-    header = f"{state}  frame {frame_idx + 1}/{total}  {pct:5.1f}%  fps {fps:g}  loop {'on' if loop else 'off'}"
-    cv2.putText(panel, header, (20, y), cv2.FONT_HERSHEY_SIMPLEX, 0.72, em, 2, cv2.LINE_AA)
-    y += 28
+    header = f"{state}   frame {frame_idx + 1}/{total}   {pct:5.1f}%   fps {fps:g}   loop {'on' if loop else 'off'}"
+    section_box(10, 82, header_bg)
+    put_lines(panel, [(header, em, 0.78, 2)], margin, y, 30)
 
-    bar_x, bar_y, bar_w, bar_h = 20, y, panel_w - 40, 12
-    cv2.rectangle(panel, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (70, 70, 70), 1)
+    bar_x, bar_y, bar_w, bar_h = margin, 56, panel_w - 40, 12
+    cv2.rectangle(panel, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (82, 90, 94), 1)
     fill_w = int(round(bar_w * (frame_idx + 1) / max(1, total)))
     cv2.rectangle(panel, (bar_x, bar_y), (bar_x + fill_w, bar_y + bar_h), ok, -1)
-    y += 34
+    y = 112
 
-    meta = [(trim_text(line, 112), muted, 0.54, 1) for line in summary_lines[:5]]
-    y = put_lines(panel, meta, 20, y, 24)
-    y += 8
+    meta = [(trim_text(line, 104), muted, 0.56, 1) for line in summary_lines[:5]]
+    meta_height = 24 + 22 * len(meta)
+    section_box(y - 26, y - 26 + meta_height)
+    y = put_lines(panel, [("Episode", em, 0.68, 2)], margin, y, 24)
+    y = put_lines(panel, meta, margin, y, 22)
+    y += 16
 
     ql = joints.get("qpos_left")
     qr = joints.get("qpos_right")
@@ -372,23 +418,33 @@ def draw_joint_panel(
 
     global_lines = [
         ("Frame Data", em, 0.72, 2),
-        (f"subtask: {format_vec(subtask, 0)}", fg, 0.6, 1),
-        (f"base_action [v,w]: {format_vec(base)}", fg, 0.6, 1),
+        (f"subtask: {format_vec(subtask, 0)}", fg, 0.62, 1),
+        (f"base [v,w]: {format_vec(base)}", fg, 0.62, 1),
     ]
-    y = put_lines(panel, global_lines, 20, y, 28)
-    y += 8
+    section_box(y - 24, y + 74)
+    y = put_lines(panel, global_lines, margin, y, 25)
+    y += 14
 
-    y = put_lines(panel, arm_lines("Left Arm", left_q, left_v, left_e, left_eef, show_velocity, show_effort), 20, y, 28)
-    y += 8
-    y = put_lines(panel, arm_lines("Right Arm", right_q, right_v, right_e, right_eef, show_velocity, show_effort), 20, y, 28)
+    left_lines = arm_lines("Left Arm", left_q, left_v, left_e, left_eef, show_velocity, show_effort)
+    left_box_h = 20 + 24 * len(left_lines)
+    section_box(y - 24, y - 24 + left_box_h)
+    y = put_lines(panel, left_lines, margin, y, 24)
+    y += 14
+
+    right_lines = arm_lines("Right Arm", right_q, right_v, right_e, right_eef, show_velocity, show_effort)
+    right_box_h = 20 + 24 * len(right_lines)
+    section_box(y - 24, y - 24 + right_box_h)
+    y = put_lines(panel, right_lines, margin, y, 24)
 
     controls = [
-        ("Controls", em, 0.66, 2),
-        ("space play/pause    r restart    l toggle loop", fg, 0.54, 1),
-        ("a/d or arrows step 1    A/D step 10    Home/End jump", fg, 0.54, 1),
-        ("v velocity text     e effort text     q/Esc quit", fg, 0.54, 1),
+        ("space play/pause   r restart   l loop", fg, 0.54, 1),
+        ("a/d or arrows step 1   A/D step 10   Home/End jump", fg, 0.54, 1),
+        ("v velocity   e effort   q/Esc quit", fg, 0.54, 1),
     ]
-    put_lines(panel, controls, 20, max(y + 12, h - 108), 25)
+    control_y = max(y + 16, h - 72)
+    if control_y < h - 12:
+        section_box(control_y - 20, h - 12, header_bg)
+        put_lines(panel, controls, margin, control_y, 22)
 
     return panel
 

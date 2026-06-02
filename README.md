@@ -135,15 +135,6 @@ PYTHONPATH=$PWD:$PWD/packages/openpi-client/src:$PYTHONPATH \
     --port 8000
 ```
 
-## 停止进程
-
-关闭对应终端里的进程可直接按 `Ctrl+C`。如果需要手动清理残留进程：
-
-```bash
-pkill -f piper_single_ctrl
-pkill -f "ros2 launch piper start_two_piper"
-pkill -f realsense2_camera
-```
 
 ## 注意事项
 

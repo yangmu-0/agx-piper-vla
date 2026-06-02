@@ -5,9 +5,9 @@ source install/setup.bash
 set -euo pipefail
 
 DATASET_DIR="/home/agilex/data/fold_towel"
-TASK_NAME="fold_towel_0601"
+TASK_NAME="fold_towel_0602"
 
-EPISODE_IDX=1
+EPISODE_IDX=65
 
 FRAME_RATE=30
 POS_CMD_MODE1=0
