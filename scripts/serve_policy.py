@@ -1,3 +1,13 @@
+"""
+uv run scripts/serve_policy.py \
+    --default-prompt="clean table" \
+    --port=8000 \
+    policy:checkpoint \
+    --policy.config=pi05_clean_table_complex_0701\
+    --policy.dir=/mnt/data/lml/data/clean_table_complex_0701/49999
+
+"""
+
 import dataclasses
 import enum
 import logging
@@ -72,6 +82,14 @@ DEFAULT_CHECKPOINT: dict[EnvMode, Checkpoint] = {
     EnvMode.LIBERO: Checkpoint(
         config="pi05_libero",
         dir="gs://openpi-assets/checkpoints/pi05_libero",
+    ),
+    EnvMode.LIBERO: Checkpoint(
+        config="clean_table_complex",
+        dir="/mnt/data/lml/data/clean_table_complex_0701/49999",
+    ),
+     EnvMode.LIBERO: Checkpoint(
+        config="pi05_clean_table_803",
+        dir="/mnt/data/yrh/pi05_clean_table_803/19999",
     ),
 }
 

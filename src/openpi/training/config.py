@@ -1,5 +1,7 @@
 """See _CONFIGS for the list of available configs."""
 
+#### 增加TrainConfig
+
 import abc
 from collections.abc import Sequence
 import dataclasses
@@ -236,6 +238,8 @@ class LeRobotAlohaDataConfig(DataConfigFactory):
     # the space used by the pi internal runtime which was used to train the base model. People who
     # use standard Aloha data should set this to true.
     adapt_to_pi: bool = True
+    # Number of action dimensions to return from the policy after unnormalization.
+    action_dim: int = 14
 
     # Repack transforms.
     repack_transforms: tyro.conf.Suppress[_transforms.Group] = dataclasses.field(
@@ -258,7 +262,7 @@ class LeRobotAlohaDataConfig(DataConfigFactory):
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
         data_transforms = _transforms.Group(
             inputs=[aloha_policy.AlohaInputs(adapt_to_pi=self.adapt_to_pi)],
-            outputs=[aloha_policy.AlohaOutputs(adapt_to_pi=self.adapt_to_pi)],
+            outputs=[aloha_policy.AlohaOutputs(adapt_to_pi=self.adapt_to_pi, action_dim=self.action_dim)],
         )
         if self.use_delta_joint_actions:
             delta_action_mask = _transforms.make_bool_mask(6, -1, 6, -1)
@@ -892,6 +896,136 @@ _CONFIGS = [
         keep_period=10_000,
         num_workers=0,  # Important: RLDS DataLoader requires num_workers=0, handles multi-processing internally
     ),
+        TrainConfig(
+        name="pi05_clean_table_0716",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,  # pi05 is trained with 32-dim actions.
+        ),
+        data=LeRobotAlohaDataConfig(
+            # Example: repo_id="physical-intelligence/aloha_pen_uncap_diverse"
+            repo_id="/mnt/data/lml/data/clean_table_0716_converted/piper/clean_table_0716",
+            # This dataset uses 16-dim bimanual end-effector pose vectors rather than the standard
+            # 14-dim ALOHA joint layout. Keep values in the dataset coordinate space and do not apply
+            # ALOHA joint-space conversion.
+            use_delta_joint_actions=False,
+            adapt_to_pi=False,
+            action_dim=16,
+            # This dataset has a custom 16-dim pose action/state layout, so it must use its own 16-dim
+            # normalization stats rather than the base checkpoint's 14-dim Trossen stats.
+            assets=AssetsConfig(
+                assets_dir="/mnt/data/lml/data/clean_table_0716_converted/piper",
+                asset_id="clean_table_0716",
+            ),
+            default_prompt="Clean table.",
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "cam_high": "observation.images.cam_high",
+                                "cam_left_wrist": "observation.images.cam_left_wrist",
+                                "cam_right_wrist": "observation.images.cam_right_wrist",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                        }
+                    )
+                ]
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("/mnt/data/lml/checkpoints/clean_table_0716/params"),
+        num_train_steps=10_000,
+        batch_size=2,
+    ),
+#### 修改这个示例######
+    TrainConfig(
+        name="pi05_clean_table_complex_0701",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,
+        ),
+        data=LeRobotAlohaDataConfig(
+            repo_id="/mnt/data/lml/data/clean_table_complex_0701",
+            use_delta_joint_actions=False,
+            adapt_to_pi=False,
+            action_dim=16,
+            assets=AssetsConfig(
+                assets_dir="/mnt/data/lml/data/clean_table_complex_0701/49999/assets",
+                asset_id="fold_towel_0601",
+            ),
+            default_prompt="imitation task",
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "cam_high": "observation.images.cam_high",
+                                "cam_left_wrist": "observation.images.cam_left_wrist",
+                                "cam_right_wrist": "observation.images.cam_right_wrist",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                        }
+                    )
+                ]
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "/mnt/data/lml/data/clean_table_complex_0701/49999/params"
+        ),
+        num_train_steps=50_000,
+        batch_size=2,
+    ),
+  
+    #803-clean-table 微调config
+    TrainConfig(
+        name="pi05_clean_table_803",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,  # pi05 is trained with 32-dim actions.
+        ),
+        data=LeRobotAlohaDataConfig(
+            # Example: repo_id="physical-intelligence/aloha_pen_uncap_diverse"
+
+            repo_id="/data/public/wrt/m2/yrh/clean_table_0803_converted/piper/clean_table_0803",
+            # This dataset uses 16-dim bimanual end-effector pose vectors rather than the standard
+            # 14-dim ALOHA joint layout. Keep values in the dataset coordinate space and do not apply
+            # ALOHA joint-space conversion.
+            use_delta_joint_actions=False,
+            adapt_to_pi=False,
+            action_dim=16,
+            # This dataset has a custom 16-dim pose action/state layout, so it must use its own 16-dim
+            # normalization stats rather than the base checkpoint's 14-dim Trossen stats.
+            assets=AssetsConfig(
+                assets_dir="/data/public/wrt/m2/yrh/clean_table_0803_converted/piper",
+                asset_id="clean_table_0803",
+            ),
+            default_prompt="clean table.",
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "cam_high": "observation.images.cam_high",
+                                "cam_left_wrist": "observation.images.cam_left_wrist",
+                                "cam_right_wrist": "observation.images.cam_right_wrist",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                        }
+                    )
+                ]
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("/data/public/wrt/m2/yrh/pretrain_model/pi05_base/params"),
+        save_interval=5000,
+        num_train_steps=20000,
+        batch_size=32,
+    ),
+
+
+
     TrainConfig(
         # This config is for fine-tuning pi05-DROID on a custom (smaller) DROID dataset.
         # Here, we use LeRobot data format (like for all other fine-tuning examples)
