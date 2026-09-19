@@ -5,12 +5,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/install/setup.bash"
 set -u
 
-DATASET_DIR="/home/agilex/data/fold_towel"
-TASK_NAME="fold_towel_0602"
-
+DATASET_DIR="/home/agilex/data/yrh"
+TASK_NAME="clean_table_0914"
 MAX_STEPS=100000
 FRAME_RATE=30
-LANGUAGE_RAW="Fold the towel."
+LANGUAGE_RAW="Sort objects on the table."
 PRINT_DATA_INFO=1
 PRINT_EVERY_N=1
 CAMERA_NAMES=(cam_high cam_left_wrist cam_right_wrist)

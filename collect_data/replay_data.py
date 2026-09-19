@@ -1,14 +1,18 @@
 # coding=utf-8
 import argparse
 import os
+import threading
 import time
 
+import cv2
 import h5py
 import numpy as np
 import rclpy
 from cv_bridge import CvBridge
 from geometry_msgs.msg import Pose
 from piper_msgs.msg import PosCmd
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, qos_profile_sensor_data
 from sensor_msgs.msg import Image, JointState
@@ -109,6 +113,131 @@ def load_hdf5(dataset_dir, task_name, episode_idx):
                 data['end_pose_right'] = np.zeros((n, 7), dtype=np.float32)
 
     return data, dataset_path
+
+
+class LiveVideoRecorder(Node):
+    """Record the three physical camera topics while robot actions are replayed."""
+
+    def __init__(self, args):
+        super().__init__('live_replay_video_recorder')
+        self.args = args
+        self.bridge = CvBridge()
+        self.output_dir = self._resolve_output_dir()
+        self.writers = {}
+        self.frame_counts = {'top': 0, 'left': 0, 'right': 0}
+        self.frame_sizes = {}
+        self.callback_groups = {}
+        self.ready_events = {
+            camera_name: threading.Event()
+            for camera_name in self.frame_counts
+        }
+        self.callback_error = None
+
+        os.makedirs(self.output_dir, exist_ok=True)
+        camera_topics = {
+            'top': args.img_top_topic,
+            'left': args.img_left_topic,
+            'right': args.img_right_topic,
+        }
+        for camera_name, topic in camera_topics.items():
+            callback_group = MutuallyExclusiveCallbackGroup()
+            self.callback_groups[camera_name] = callback_group
+            self.create_subscription(
+                Image,
+                topic,
+                lambda msg, name=camera_name: self._image_callback(name, msg),
+                qos_profile_sensor_data,
+                callback_group=callback_group,
+            )
+        print(f'Live camera videos: {self.output_dir}')
+        for camera_name, topic in camera_topics.items():
+            print(f'  waiting for {camera_name}: {topic}')
+
+    def _resolve_output_dir(self):
+        output_dir = self.args.video_output_dir
+        if not output_dir:
+            timestamp = time.strftime('%Y%m%d_%H%M%S')
+            output_dir = os.path.join(
+                self.args.dataset_dir,
+                self.args.task_name,
+                'replay_videos',
+                f'episode_{self.args.episode_idx}_live_{timestamp}',
+            )
+        return os.path.abspath(os.path.expanduser(output_dir))
+
+    def _image_callback(self, camera_name, msg):
+        if self.callback_error is not None:
+            return
+        try:
+            frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+            frame = np.ascontiguousarray(frame)
+            if camera_name not in self.writers:
+                self._open_writer(camera_name, frame)
+            expected_size = self.frame_sizes[camera_name]
+            actual_size = (frame.shape[1], frame.shape[0])
+            if actual_size != expected_size:
+                raise RuntimeError(
+                    f'Live camera {camera_name} resolution changed from '
+                    f'{expected_size} to {actual_size}'
+                )
+            self.writers[camera_name].write(frame)
+            self.frame_counts[camera_name] += 1
+            self.ready_events[camera_name].set()
+        except Exception as exc:
+            self.callback_error = exc
+
+    def _open_writer(self, camera_name, frame):
+        if frame.dtype != np.uint8 or frame.ndim != 3 or frame.shape[2] != 3:
+            raise RuntimeError(
+                f'Cannot record live camera {camera_name}: expected uint8 HxWx3, '
+                f'got dtype={frame.dtype}, shape={frame.shape}'
+            )
+        height, width = frame.shape[:2]
+        output_path = os.path.join(self.output_dir, f'{camera_name}.mkv')
+        writer = cv2.VideoWriter(
+            output_path,
+            cv2.VideoWriter_fourcc(*'FFV1'),
+            float(self.args.live_video_fps),
+            (width, height),
+        )
+        if not writer.isOpened():
+            writer.release()
+            raise RuntimeError(f'Failed to open lossless video writer: {output_path}')
+        self.writers[camera_name] = writer
+        self.frame_sizes[camera_name] = (width, height)
+        print(
+            f'Live camera ready [{camera_name}]: {width}x{height}, '
+            f'{self.args.live_video_fps:g} fps, FFV1 lossless'
+        )
+
+    def wait_until_ready(self, timeout_s):
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            if self.callback_error is not None:
+                raise RuntimeError(f'Live video recorder failed: {self.callback_error}')
+            if all(event.is_set() for event in self.ready_events.values()):
+                print('All three live cameras are ready; robot replay may start.')
+                return
+            time.sleep(0.05)
+        missing = [
+            name for name, event in self.ready_events.items()
+            if not event.is_set()
+        ]
+        raise RuntimeError(
+            f'Timed out after {timeout_s:g}s waiting for live cameras: '
+            f'{", ".join(missing)}. Start camera.sh before replaying.'
+        )
+
+    def close(self):
+        for writer in self.writers.values():
+            writer.release()
+        if self.writers:
+            counts = ', '.join(
+                f'{name}={self.frame_counts[name]}'
+                for name in ['top', 'left', 'right']
+            )
+            print(f'Saved live camera videos to: {self.output_dir}')
+            print(f'Live video frame counts: {counts}')
 
 
 class Ros2Replayer(Node):
@@ -231,16 +360,16 @@ class Ros2Replayer(Node):
             if not rclpy.ok():
                 break
 
-            # Publish RGB
-            self.pub_rgb_top.publish(self.bridge.cv2_to_imgmsg(data['images'][cam_top][i], encoding='passthrough'))
-            self.pub_rgb_left.publish(self.bridge.cv2_to_imgmsg(data['images'][cam_left][i], encoding='passthrough'))
-            self.pub_rgb_right.publish(self.bridge.cv2_to_imgmsg(data['images'][cam_right][i], encoding='passthrough'))
-
-            # Publish Depth (if present)
-            if all(cam in data['images_depth'] for cam in [cam_top, cam_left, cam_right]):
-                self.pub_depth_top.publish(self.bridge.cv2_to_imgmsg(data['images_depth'][cam_top][i], encoding='passthrough'))
-                self.pub_depth_left.publish(self.bridge.cv2_to_imgmsg(data['images_depth'][cam_left][i], encoding='passthrough'))
-                self.pub_depth_right.publish(self.bridge.cv2_to_imgmsg(data['images_depth'][cam_right][i], encoding='passthrough'))
+            # Live cameras publish on these same topics. Do not mix saved HDF5
+            # images into the physical-camera streams while live recording.
+            if not self.args.record_live_videos:
+                self.pub_rgb_top.publish(self.bridge.cv2_to_imgmsg(data['images'][cam_top][i], encoding='passthrough'))
+                self.pub_rgb_left.publish(self.bridge.cv2_to_imgmsg(data['images'][cam_left][i], encoding='passthrough'))
+                self.pub_rgb_right.publish(self.bridge.cv2_to_imgmsg(data['images'][cam_right][i], encoding='passthrough'))
+                if all(cam in data['images_depth'] for cam in [cam_top, cam_left, cam_right]):
+                    self.pub_depth_top.publish(self.bridge.cv2_to_imgmsg(data['images_depth'][cam_top][i], encoding='passthrough'))
+                    self.pub_depth_left.publish(self.bridge.cv2_to_imgmsg(data['images_depth'][cam_left][i], encoding='passthrough'))
+                    self.pub_depth_right.publish(self.bridge.cv2_to_imgmsg(data['images_depth'][cam_right][i], encoding='passthrough'))
 
             # Publish joints
             self.pub_joint_states_left.publish(
@@ -331,6 +460,20 @@ class Ros2Replayer(Node):
                 if self.args.frame_rate > 0:
                     time.sleep(1.0 / self.args.frame_rate)
 
+            completed_steps = i + 1
+            if (
+                self.args.pause_every_n > 0
+                and self.args.pause_seconds > 0
+                and completed_steps % self.args.pause_every_n == 0
+                and completed_steps < total
+            ):
+                print(
+                    f'Completed {completed_steps} steps; '
+                    f'pausing for {self.args.pause_seconds:g} seconds...',
+                    flush=True,
+                )
+                time.sleep(self.args.pause_seconds)
+
             # if i % 50 == 0:
             #     print(f'Replay {i}/{total}')
             print(f'Replay {i}/{total}')
@@ -341,11 +484,39 @@ def main(args):
     print(f'Loaded: {path}')
 
     rclpy.init(args=None)
-    node = Ros2Replayer(args)
+    node = None
+    recorder = None
+    recorder_executor = None
+    recorder_thread = None
     try:
+        if args.record_live_videos:
+            recorder = LiveVideoRecorder(args)
+            # FFV1 is CPU-intensive. Give each camera callback its own worker so
+            # one stream cannot starve the other two while frames are encoded.
+            recorder_executor = MultiThreadedExecutor(num_threads=3)
+            recorder_executor.add_node(recorder)
+            recorder_thread = threading.Thread(
+                target=recorder_executor.spin,
+                name='live-video-recorder',
+                daemon=True,
+            )
+            recorder_thread.start()
+            recorder.wait_until_ready(args.live_camera_timeout)
+
+        node = Ros2Replayer(args)
         node.replay(data)
+        if recorder is not None and recorder.callback_error is not None:
+            raise RuntimeError(f'Live video recorder failed: {recorder.callback_error}')
     finally:
-        node.destroy_node()
+        if node is not None:
+            node.destroy_node()
+        if recorder_executor is not None:
+            recorder_executor.shutdown()
+        if recorder_thread is not None:
+            recorder_thread.join(timeout=2.0)
+        if recorder is not None:
+            recorder.close()
+            recorder.destroy_node()
         rclpy.shutdown()
 
 
@@ -358,15 +529,40 @@ if __name__ == '__main__':
     parser.add_argument('--frame_rate', type=int, default=30)
     parser.add_argument('--use_saved_timestamps', action='store_true')
     parser.add_argument('--max_sleep_s', type=float, default=0.2)
+    parser.add_argument('--pause_every_n', type=int, default=0, help='Pause after every N replayed steps; 0 disables it.')
+    parser.add_argument('--pause_seconds', type=float, default=0.0, help='Extra pause duration in seconds.')
     parser.add_argument('--camera_names', nargs=3, default=['cam_high', 'cam_left_wrist', 'cam_right_wrist'])
+    parser.add_argument(
+        '--record_live_videos',
+        action='store_true',
+        help='Record physical top/left/right camera topics during robot action replay.',
+    )
+    parser.add_argument(
+        '--video_output_dir',
+        type=str,
+        default=None,
+        help='Directory for top.mkv, left.mkv and right.mkv.',
+    )
+    parser.add_argument(
+        '--live_video_fps',
+        type=float,
+        default=30.0,
+        help='Output fps for physical-camera videos.',
+    )
+    parser.add_argument(
+        '--live_camera_timeout',
+        type=float,
+        default=15.0,
+        help='Seconds to wait for all three physical camera topics before robot replay.',
+    )
 
-    parser.add_argument('--img_left_topic', type=str, default='/camera/left/color/image_raw')
-    parser.add_argument('--img_right_topic', type=str, default='/camera/right/color/image_raw')
-    parser.add_argument('--img_top_topic', type=str, default='/camera/top/color/image_raw')
+    parser.add_argument('--img_left_topic', type=str, default='/left/color/image_raw')
+    parser.add_argument('--img_right_topic', type=str, default='/right/color/image_raw')
+    parser.add_argument('--img_top_topic', type=str, default='/top/color/image_raw')
 
-    parser.add_argument('--img_left_depth_topic', type=str, default='/camera/left/depth/image_rect_raw')
-    parser.add_argument('--img_right_depth_topic', type=str, default='/camera/right/depth/image_rect_raw')
-    parser.add_argument('--img_top_depth_topic', type=str, default='/camera/top/depth/image_rect_raw')
+    parser.add_argument('--img_left_depth_topic', type=str, default='/left/depth/image_rect_raw')
+    parser.add_argument('--img_right_depth_topic', type=str, default='/right/depth/image_rect_raw')
+    parser.add_argument('--img_top_depth_topic', type=str, default='/top/depth/image_rect_raw')
 
     parser.add_argument('--joint_states_left_topic', type=str, default='/joint_states_left')
     parser.add_argument('--joint_states_right_topic', type=str, default='/joint_states_right')
@@ -385,4 +581,12 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
     args.print_every_n = max(1, int(args.print_every_n))
+    if args.pause_every_n < 0:
+        parser.error('--pause_every_n must be greater than or equal to 0')
+    if not np.isfinite(args.pause_seconds) or args.pause_seconds < 0:
+        parser.error('--pause_seconds must be a finite number greater than or equal to 0')
+    if not np.isfinite(args.live_video_fps) or args.live_video_fps <= 0:
+        parser.error('--live_video_fps must be a finite number greater than 0')
+    if not np.isfinite(args.live_camera_timeout) or args.live_camera_timeout <= 0:
+        parser.error('--live_camera_timeout must be a finite number greater than 0')
     main(args)

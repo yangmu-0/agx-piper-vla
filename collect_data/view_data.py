@@ -4,8 +4,8 @@
 '''
   python3 /home/agilex/piper_ros/collect_data/view_data.py \
     --dataset_dir /home/agilex/data \
-    --task_name fold_towel \
-    --episode_idx 0 --show_depth --show_velocity --show_effort
+    --task_name fold_towel/fold_towel_0610 \
+    --episode_idx 30 --show_depth --show_velocity --show_effort
 
 '''
 import argparse
@@ -471,7 +471,7 @@ def main():
     parser.add_argument("--task_name", type=str, default=None, help="Task folder under dataset_dir")
     parser.add_argument("--episode_idx", type=int, default=0, help="Episode index")
     parser.add_argument("--show_depth", action="store_true", help="Also show /observations/images_depth")
-    parser.add_argument("--fps", type=float, default=20.0, help="Playback fps")
+    parser.add_argument("--fps", type=float, default=15, help="Playback fps")
     parser.add_argument("--start", type=int, default=0, help="Start frame")
     parser.add_argument("--show_velocity", action="store_true", help="Show qvel text")
     parser.add_argument("--show_effort", action="store_true", help="Show effort text")
